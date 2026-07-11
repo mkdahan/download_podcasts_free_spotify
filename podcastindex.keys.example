@@ -1,0 +1,4 @@
+# Free signup: https://api.podcastindex.org/signup
+# Copy this file to podcastindex.keys and fill in your values.
+PODCASTINDEX_API_KEY=
+PODCASTINDEX_API_SECRET=

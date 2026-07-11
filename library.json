@@ -1,0 +1,33 @@
+{
+  "shows": [
+    {
+      "name": "מתוק מדבש - סיפורי תנ״ך לילדים וילדות",
+      "artist": "Ahia Polack",
+      "feed": "https://feeds.redcircle.com/06fb9525-285c-4e8c-bee6-67ade00e92a9",
+      "aliases": ["מתוק מדבש", "matok midvash", "matokmidvash"]
+    },
+    {
+      "name": "סיפורי רבי נחמן מברסלב לילדים",
+      "artist": "אלעד טאוב",
+      "feed": "https://anchor.fm/s/b57ebdb8/podcast/rss",
+      "aliases": [
+        "רבי נחמן",
+        "ברסלב לילדים",
+        "סיפורי רבי נחמן",
+        "elad taub",
+        "אלעד טאוב"
+      ]
+    },
+    {
+      "name": "סיפורי תנ״ך לילדים",
+      "artist": "עקיבא צוקרמן",
+      "feed": "https://feed.podbean.com/akivazuk/feed.xml",
+      "aliases": [
+        "סיפורי תנך לילדים",
+        "עקיבא צוקרמן",
+        "akiva zukerman",
+        "akivazuk"
+      ]
+    }
+  ]
+}

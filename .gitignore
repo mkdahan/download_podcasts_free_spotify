@@ -1,0 +1,11 @@
+﻿downloads/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.part
+podcastindex.keys
+desktop.ini
+_rss_search/
+*.part
+PodcastsOffline/

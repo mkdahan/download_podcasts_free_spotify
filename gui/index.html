@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="he" dir="auto">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Offline Podcasts</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <p class="eyebrow">Family offline library</p>
+      <h1>Offline Podcasts</h1>
+      <p class="lede">Search for a show’s RSS, pick episodes, download to any folder — no phone browsing for the kids.</p>
+    </header>
+
+    <section class="panel search-panel">
+      <h2>1. Find a podcast</h2>
+      <form id="search-form" class="search-row">
+        <input
+          id="query"
+          type="search"
+          placeholder="Search name, Spotify/YouTube URL, or RSS URL"
+          autocomplete="off"
+          required
+        />
+        <button type="submit" class="btn primary">Search</button>
+      </form>
+      <p class="hint">
+        Searches: library, Podcast Index (optional free keys), Apple/iTunes (many countries),
+        fyyd, gPodder, Spotify (when resolvable), YouTube.
+        Music albums on Spotify (e.g. Baby Mozart lullabies) usually have <em>no podcast RSS</em> —
+        use YouTube results for those.
+      </p>
+      <details class="settings">
+        <summary>Podcast Index keys (recommended — millions of feeds)</summary>
+        <p class="hint">
+          Free signup:
+          <a href="https://api.podcastindex.org/signup" target="_blank" rel="noreferrer">api.podcastindex.org/signup</a>
+          then paste key + secret here.
+        </p>
+        <div class="search-row">
+          <input id="pi-key" type="text" placeholder="PODCASTINDEX_API_KEY" autocomplete="off" />
+          <input id="pi-secret" type="password" placeholder="PODCASTINDEX_API_SECRET" autocomplete="off" />
+          <button type="button" id="save-pi" class="btn ghost">Save keys</button>
+        </div>
+        <div id="pi-status" class="status" hidden></div>
+      </details>
+      <div id="search-status" class="status" hidden></div>
+      <div id="results" class="results"></div>
+    </section>
+
+    <section class="panel" id="show-panel" hidden>
+      <div class="show-head">
+        <div>
+          <h2 id="show-title">Show</h2>
+          <p id="show-meta" class="meta"></p>
+        </div>
+        <button type="button" id="save-library" class="btn ghost">Save to library</button>
+      </div>
+
+      <div class="folder-row">
+        <label for="out-dir">Download folder</label>
+        <div class="folder-controls">
+          <input id="out-dir" type="text" spellcheck="false" />
+          <button type="button" id="pick-folder" class="btn ghost">Browse…</button>
+        </div>
+      </div>
+
+      <div class="episode-toolbar">
+        <label class="check">
+          <input type="checkbox" id="select-all" checked />
+          Select all
+        </label>
+        <div class="toolbar-actions">
+          <button type="button" id="cancel-download" class="btn ghost" hidden>Cancel</button>
+          <button type="button" id="download-btn" class="btn primary">Download selected</button>
+        </div>
+      </div>
+
+      <div id="episodes" class="episodes"></div>
+      <div id="download-status" class="status" hidden></div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
