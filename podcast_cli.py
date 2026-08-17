@@ -549,8 +549,80 @@ def merge_results(*groups: list[dict], limit: int) -> list[dict]:
     return merged
 
 
+YOUTUBE_PLAYLIST_ID_RE = re.compile(r"(?:[?&]list=)([A-Za-z0-9_-]+)", re.I)
+# YouTube search filter: Playlists tab
+YOUTUBE_SEARCH_PLAYLISTS_SP = "EgIQAw%3D%3D"
+
+
 def is_youtube_url(url: str) -> bool:
     return bool(re.search(r"(?:youtube\.com|youtu\.be)/", url or "", re.I))
+
+
+def youtube_playlist_id(url: str) -> str | None:
+    match = YOUTUBE_PLAYLIST_ID_RE.search(url or "")
+    if not match:
+        return None
+    pid = match.group(1)
+    # Skip auto-generated mixes (RD…) — they are endless and not a real album.
+    if pid.startswith("RD"):
+        return None
+    return pid
+
+
+def normalize_youtube_url(url: str) -> str:
+    """Prefer a playlist URL when the link includes list=PL… so all videos load."""
+    pid = youtube_playlist_id(url)
+    if pid:
+        return f"https://www.youtube.com/playlist?list={pid}"
+    return url
+
+
+def _yt_dlp_json(
+    url: str,
+    playlist_end: int | None = None,
+    timeout: int = 180,
+) -> dict:
+    bin_path = _yt_dlp_bin()
+    cmd = [bin_path, "--flat-playlist", "-J", "--no-warnings", "--ignore-errors"]
+    if playlist_end:
+        cmd.extend(["--playlist-end", str(playlist_end)])
+    cmd.append(url)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "yt-dlp is required for YouTube. Install: py -3 -m pip install yt-dlp"
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("YouTube listing timed out") from e
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        raise RuntimeError(proc.stderr.strip() or "yt-dlp returned no data")
+    parsed = json.loads(raw)
+    # yt-dlp -J can emit JSON null (e.g. a channel with no /playlists tab).
+    if parsed is None:
+        raise RuntimeError(proc.stderr.strip() or "yt-dlp returned no playlist data")
+    if isinstance(parsed, list):
+        return {
+            "_type": "playlist",
+            "entries": [e for e in parsed if isinstance(e, dict)],
+        }
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            f"yt-dlp returned unexpected JSON ({type(parsed).__name__})"
+        )
+    entries = parsed.get("entries")
+    if isinstance(entries, list):
+        parsed["entries"] = [e for e in entries if isinstance(e, dict)]
+    return parsed
 
 
 def _yt_dlp_bin() -> str:
@@ -566,8 +638,99 @@ def _yt_dlp_bin() -> str:
     return "yt-dlp"
 
 
+def _playlist_result(entry: dict, artist_fallback: str = "YouTube") -> dict | None:
+    if not isinstance(entry, dict):
+        return None
+    pid = entry.get("id") or ""
+    url = (entry.get("url") or entry.get("webpage_url") or "").strip()
+    if pid.startswith("PL") and "playlist?list=" not in url:
+        url = f"https://www.youtube.com/playlist?list={pid}"
+    elif youtube_playlist_id(url):
+        url = normalize_youtube_url(url)
+    if not url or "playlist?list=" not in url:
+        return None
+    title = entry.get("title") or entry.get("id") or "YouTube playlist"
+    artist = (
+        entry.get("channel")
+        or entry.get("uploader")
+        or entry.get("playlist_uploader")
+        or artist_fallback
+    )
+    count = entry.get("playlist_count") or entry.get("n_entries")
+    return {
+        "name": f"{title} (playlist)",
+        "artist": artist,
+        "feed": url,
+        "episodes": count,
+        "source": "youtube-playlist",
+    }
+
+
+def search_youtube_playlists(query: str, limit: int = 8) -> list[dict]:
+    """Search YouTube's Playlists tab (not individual videos)."""
+    from urllib.parse import quote_plus
+
+    search_url = (
+        "https://www.youtube.com/results?search_query="
+        f"{quote_plus(query)}&sp={YOUTUBE_SEARCH_PLAYLISTS_SP}"
+    )
+    try:
+        data = _yt_dlp_json(search_url, playlist_end=max(limit * 2, 12), timeout=90)
+    except Exception as e:
+        safe_print(f"Warning: YouTube playlist search failed: {e}", file=sys.stderr)
+        return []
+    if not isinstance(data, dict):
+        return []
+    results = []
+    for entry in data.get("entries") or []:
+        if not entry:
+            continue
+        item = _playlist_result(entry)
+        if item:
+            results.append(item)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def search_channel_playlists(channel_url: str, artist: str, limit: int = 12) -> list[dict]:
+    """List playlists published on a YouTube channel."""
+    if not channel_url:
+        return []
+    playlists_url = channel_url.rstrip("/") + "/playlists"
+    try:
+        data = _yt_dlp_json(playlists_url, playlist_end=limit, timeout=90)
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    results = []
+    for entry in data.get("entries") or []:
+        if not entry:
+            continue
+        item = _playlist_result(entry, artist_fallback=artist)
+        if item:
+            results.append(item)
+        if len(results) >= limit:
+            break
+    return results
+
+
 def search_youtube(query: str, limit: int = 6) -> list[dict]:
-    """Search YouTube via yt-dlp (channels + top videos)."""
+    """Search YouTube: playlists first, then channels, then top videos."""
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(item: dict) -> None:
+        key = (item.get("feed") or "").rstrip("/").casefold()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        results.append(item)
+
+    for item in search_youtube_playlists(query, limit=max(limit, 8)):
+        _add(item)
+
     bin_path = _yt_dlp_bin()
     try:
         proc = subprocess.run(
@@ -592,12 +755,11 @@ def search_youtube(query: str, limit: int = 6) -> list[dict]:
             "Warning: yt-dlp not found. Install with: py -3 -m pip install yt-dlp",
             file=sys.stderr,
         )
-        return []
+        return results[:limit]
     except subprocess.TimeoutExpired:
         safe_print("Warning: YouTube search timed out", file=sys.stderr)
-        return []
+        return results[:limit]
 
-    results: list[dict] = []
     seen_channels: set[str] = set()
     for line in (proc.stdout or "").splitlines():
         parts = line.split("\t")
@@ -611,7 +773,7 @@ def search_youtube(query: str, limit: int = 6) -> list[dict]:
 
         if channel_url and channel_url not in seen_channels:
             seen_channels.add(channel_url)
-            results.append(
+            _add(
                 {
                     "name": f"{channel} (YouTube channel)",
                     "artist": channel,
@@ -620,8 +782,16 @@ def search_youtube(query: str, limit: int = 6) -> list[dict]:
                     "source": "youtube",
                 }
             )
+            try:
+                channel_playlists = search_channel_playlists(
+                    channel_url, channel, limit=8
+                )
+            except Exception:
+                channel_playlists = []
+            for pl in channel_playlists:
+                _add(pl)
         if webpage:
-            results.append(
+            _add(
                 {
                     "name": title,
                     "artist": channel,
@@ -630,44 +800,30 @@ def search_youtube(query: str, limit: int = 6) -> list[dict]:
                     "source": "youtube-video",
                 }
             )
-        if len(results) >= limit:
+        if len(results) >= max(limit * 3, 20):
             break
-    return results[:limit]
+    return results[: max(limit * 3, 16)]
 
 
-def get_youtube_entries(url: str, limit: int | None = 50) -> dict:
+_YT_LIST_CACHE: dict[str, tuple[float, dict]] = {}
+_YT_LIST_CACHE_TTL = 600.0
+
+
+def get_youtube_entries(url: str, limit: int | None = None) -> dict:
     """List videos from a YouTube URL / channel / playlist as episode-like rows."""
-    bin_path = _yt_dlp_bin()
-    max_items = limit or 50
-    cmd = [
-        bin_path,
-        "--flat-playlist",
-        "--playlist-end",
-        str(max_items),
-        "-J",
-        url,
-        "--no-warnings",
-        "--ignore-errors",
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-            check=False,
-        )
-    except FileNotFoundError as e:
-        raise RuntimeError(
-            "yt-dlp is required for YouTube. Install: py -3 -m pip install yt-dlp"
-        ) from e
-
-    if not proc.stdout.strip():
-        raise RuntimeError(proc.stderr.strip() or "yt-dlp returned no data")
-
-    data = json.loads(proc.stdout)
+    url = normalize_youtube_url(url)
+    cached = _YT_LIST_CACHE.get(url)
+    if cached and (time.time() - cached[0]) < _YT_LIST_CACHE_TTL:
+        info = cached[1]
+        if limit:
+            trimmed = dict(info)
+            trimmed["episodes"] = info["episodes"][:limit]
+            trimmed["episode_count"] = len(trimmed["episodes"])
+            return trimmed
+        return info
+    # Playlists/channels can be long; 50 was hiding most of a series.
+    max_items = limit if limit else 2000
+    data = _yt_dlp_json(url, playlist_end=max_items, timeout=300)
     entries = data.get("entries") or [data]
     title = data.get("title") or data.get("channel") or "YouTube"
     author = data.get("uploader") or data.get("channel") or "YouTube"
@@ -677,23 +833,23 @@ def get_youtube_entries(url: str, limit: int | None = 50) -> dict:
             continue
         vid = entry.get("id") or ""
         webpage = entry.get("url") or entry.get("webpage_url") or ""
-        if vid and not webpage.startswith("http"):
+        if vid and (not webpage or not str(webpage).startswith("http")):
             webpage = f"https://www.youtube.com/watch?v={vid}"
-        elif vid and "watch?v=" not in webpage and not webpage.startswith("http"):
+        elif vid and "watch?v=" not in str(webpage) and not str(webpage).startswith("http"):
             webpage = f"https://www.youtube.com/watch?v={vid}"
-        if vid and not webpage:
-            webpage = f"https://www.youtube.com/watch?v={vid}"
+        members = _youtube_entry_is_members_only(entry)
         episodes.append(
             {
                 "index": i,
                 "title": entry.get("title") or f"video-{i}",
                 "published": "",
-                "has_audio": True,
+                "has_audio": not members,
+                "members_only": members,
                 "audio_url": webpage,
                 "video_id": vid,
             }
         )
-    return {
+    info = {
         "title": title,
         "author": author,
         "feed": url,
@@ -701,6 +857,103 @@ def get_youtube_entries(url: str, limit: int | None = 50) -> dict:
         "episodes": episodes,
         "kind": "youtube",
     }
+    # Only cache complete listings so one-at-a-time GUI downloads keep later items.
+    if not limit:
+        _YT_LIST_CACHE[url] = (time.time(), info)
+    return info
+
+
+def _youtube_entry_is_members_only(entry: dict) -> bool:
+    avail = str(entry.get("availability") or "").lower()
+    if "subscriber" in avail or "premium" in avail or "members" in avail:
+        return True
+    extras = " ".join(
+        str(entry.get(k) or "")
+        for k in ("title", "description", "availability", "live_status")
+    ).lower()
+    return "members-only" in extras or "members only" in extras
+
+
+def _youtube_error_kind(text: str) -> str:
+    t = (text or "").lower()
+    if "members-only" in t or "join this channel" in t or "member's-only" in t:
+        return "members"
+    if "403" in t or "forbidden" in t:
+        return "forbidden"
+    if "sign in" in t or "private video" in t:
+        return "private"
+    return "other"
+
+
+def _youtube_friendly_reason(kind: str, raw: str) -> str:
+    if kind == "members":
+        return (
+            "Members-only on YouTube — not downloadable unless you have a channel "
+            "membership and browser login cookies."
+        )
+    if kind == "forbidden":
+        return (
+            "YouTube blocked the download (HTTP 403). Restart with run_gui.bat so yt-dlp "
+            "updates, then retry. Installing Node.js LTS also helps. Some videos stay blocked."
+        )
+    if kind == "private":
+        return "Private / login-required YouTube video."
+    return (raw or "yt-dlp failed")[-300:]
+
+
+def _js_runtime_args() -> list[str]:
+    """YouTube now needs a JS runtime for many formats (avoids HTTP 403)."""
+    for name in ("node", "deno", "bun"):
+        if shutil.which(name):
+            return ["--js-runtimes", name]
+    return []
+
+
+def _yt_dlp_download_attempts(webpage: str, outtmpl: str) -> list[list[str]]:
+    bin_path = _yt_dlp_bin()
+    js = _js_runtime_args()
+    # android_sdkless formats often 403 in 2026; prefer default web clients.
+    no_android = "youtube:player_client=default,-android_sdkless"
+    base = [
+        bin_path,
+        "-f",
+        "bestaudio/best",
+        "-o",
+        outtmpl,
+        "--no-playlist",
+        "--no-warnings",
+        "--retries",
+        "8",
+        "--fragment-retries",
+        "8",
+        "--retry-sleep",
+        "2",
+        "--socket-timeout",
+        "30",
+        "--geo-bypass",
+        "--sleep-requests",
+        "1",
+        *js,
+    ]
+    return [
+        base + ["--extractor-args", no_android, webpage],
+        base
+        + [
+            "--extractor-args",
+            no_android,
+            "--cookies-from-browser",
+            "chrome",
+            webpage,
+        ],
+        base
+        + [
+            "--extractor-args",
+            no_android,
+            "--cookies-from-browser",
+            "edge",
+            webpage,
+        ],
+    ]
 
 
 def download_youtube_entries(
@@ -710,8 +963,17 @@ def download_youtube_entries(
     indices: list[int] | None = None,
     skip_existing: bool = True,
     quiet: bool = False,
+    show_title: str | None = None,
+    direct_episodes: list[dict] | None = None,
 ) -> dict:
-    info = get_youtube_entries(url, limit=None if indices else (limit or 50))
+    if direct_episodes:
+        info = {
+            "title": show_title or "youtube",
+            "episodes": direct_episodes,
+        }
+    else:
+        # Full list (cached) so GUI one-at-a-time downloads still find later items.
+        info = get_youtube_entries(url)
     show = safe_name(info["title"] or "youtube")
     dest = out_dir / show
     dest.mkdir(parents=True, exist_ok=True)
@@ -723,7 +985,9 @@ def download_youtube_entries(
     elif limit:
         selected = selected[:limit]
 
-    bin_path = _yt_dlp_bin()
+    tmp_dir = Path(tempfile.gettempdir()) / "podcast_cli_youtube"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
     results = []
     downloaded = 0
     for ep in selected:
@@ -743,38 +1007,73 @@ def download_youtube_entries(
                 }
             )
             continue
-
-        outtmpl = str(dest / f"{base}.%(ext)s")
-        # Prefer audio-only; keep original format if ffmpeg is missing.
-        cmd = [
-            bin_path,
-            "-f",
-            "bestaudio/best",
-            "-o",
-            outtmpl,
-            "--no-playlist",
-            "--no-warnings",
-            webpage,
-        ]
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=600,
-                check=False,
+        if ep.get("members_only"):
+            results.append(
+                {
+                    "index": index,
+                    "title": title,
+                    "status": "skipped",
+                    "reason": _youtube_friendly_reason("members", ""),
+                }
             )
-            files = list(dest.glob(f"{base}.*"))
-            files = [p for p in files if p.suffix.lower() not in {".part", ".ytdl"}]
-            if proc.returncode != 0 or not files:
+            continue
+
+        tmp_tmpl = str(tmp_dir / f"{os.getpid()}_{index}.%(ext)s")
+        last_err = ""
+        last_kind = "other"
+        ok_files: list[Path] = []
+        attempts = _yt_dlp_download_attempts(webpage, tmp_tmpl)
+        timeouts = [180, 90, 90]
+        for i, cmd in enumerate(attempts):
+            if i > 0 and last_kind == "members":
+                break
+            if i > 0 and last_kind not in {"forbidden", "private", "other"}:
+                break
+            for leftover in tmp_dir.glob(f"{os.getpid()}_{index}.*"):
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeouts[i] if i < len(timeouts) else 120,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                last_err = "yt-dlp timed out"
+                last_kind = "other"
+                continue
+            except Exception as e:
+                last_err = str(e)
+                continue
+            last_err = (proc.stderr or proc.stdout or "").strip()
+            last_kind = _youtube_error_kind(last_err)
+            ok_files = [
+                p
+                for p in tmp_dir.glob(f"{os.getpid()}_{index}.*")
+                if p.suffix.lower() not in {".part", ".ytdl", ".temp"}
+            ]
+            if proc.returncode == 0 and ok_files:
+                break
+            if last_kind == "members":
+                break
+        if ok_files:
+            src = max(ok_files, key=lambda p: p.stat().st_size)
+            dest_path = dest / f"{base}{src.suffix}"
+            try:
+                replace_with_retry(src, dest_path)
+            except Exception as e:
                 results.append(
                     {
                         "index": index,
                         "title": title,
                         "status": "error",
-                        "reason": (proc.stderr or proc.stdout or "yt-dlp failed")[-300:],
+                        "reason": str(e),
                     }
                 )
                 continue
@@ -784,20 +1083,25 @@ def download_youtube_entries(
                     "index": index,
                     "title": title,
                     "status": "downloaded",
-                    "path": str(files[0].resolve()),
+                    "path": str(dest_path.resolve()),
                 }
             )
             if not quiet:
-                safe_print(f"Downloaded: {files[0].name}")
-        except Exception as e:
-            results.append(
-                {
-                    "index": index,
-                    "title": title,
-                    "status": "error",
-                    "reason": str(e),
-                }
-            )
+                safe_print(f"Downloaded: {dest_path.name}")
+            time.sleep(1.2)
+            continue
+
+        status = "skipped" if last_kind == "members" else "error"
+        results.append(
+            {
+                "index": index,
+                "title": title,
+                "status": status,
+                "reason": _youtube_friendly_reason(last_kind, last_err),
+            }
+        )
+        if last_kind == "forbidden":
+            time.sleep(2.5)
 
     if not quiet:
         safe_print(f"\nDone. Saved {downloaded} file(s) to: {dest.resolve()}")
@@ -826,17 +1130,23 @@ def search_podcasts_detailed(
     notes: list[str] = []
 
     if is_youtube_url(query):
+        url = normalize_youtube_url(query)
+        kind = "youtube-playlist" if youtube_playlist_id(url) else "youtube"
         return {
             "results": [
                 {
-                    "name": query,
+                    "name": url,
                     "artist": "YouTube",
-                    "feed": query,
+                    "feed": url,
                     "episodes": None,
-                    "source": "youtube",
+                    "source": kind,
                 }
             ],
-            "notes": [],
+            "notes": (
+                ["Opening the full playlist (not only the one video in the link)."]
+                if kind == "youtube-playlist"
+                else []
+            ),
             "podcastindex_configured": podcastindex_configured(),
         }
 
@@ -908,29 +1218,33 @@ def search_podcasts_detailed(
             safe_print(f"Warning: Spotify web search failed: {e}", file=sys.stderr)
 
     youtube: list[dict] = []
-    yt_limit = 10 if (MUSIC_HINT_RE.search(query) or not name_hit) else 5
+    yt_limit = 16 if (MUSIC_HINT_RE.search(query) or not name_hit) else 10
     try:
         youtube = search_youtube(query, limit=yt_limit)
     except Exception as e:
         safe_print(f"Warning: YouTube search failed: {e}", file=sys.stderr)
         notes.append(f"YouTube search failed: {e}")
 
-    # For music-like queries, put YouTube first so lullabies aren't buried under weak podcast matches.
+    # Playlists first for creator-name searches; music queries already boost YouTube.
     if MUSIC_HINT_RE.search(query) or not name_hit:
-        merged = merge_results(youtube, merged, limit=max(limit * 2, 30))
+        merged = merge_results(youtube, merged, limit=max(limit * 2, 40))
     else:
-        merged = merge_results(merged, youtube, limit=max(limit * 2, 30))
+        merged = merge_results(merged, youtube, limit=max(limit * 2, 40))
 
     def _rank(item: dict) -> tuple:
         name = item.get("name") or ""
         src = item.get("source") or ""
-        if _strong_title_match(query, name):
-            return (0, src)
-        if src.startswith("youtube"):
-            return (1 if MUSIC_HINT_RE.search(query) else 2, src)
         if src == "library":
             return (0, src)
-        return (3, src)
+        if _strong_title_match(query, name):
+            return (0, src)
+        if src == "youtube-playlist":
+            return (1, src)
+        if src == "youtube":
+            return (2, src)
+        if src.startswith("youtube"):
+            return (3 if MUSIC_HINT_RE.search(query) else 4, src)
+        return (5, src)
 
     merged = sorted(merged, key=_rank)
 
@@ -1159,6 +1473,8 @@ def download_episodes(
     skip_existing: bool = True,
     indices: list[int] | None = None,
     quiet: bool = False,
+    show_title: str | None = None,
+    direct_episodes: list[dict] | None = None,
 ) -> dict:
     """
     Download episodes to out_dir/<show>/.
@@ -1175,6 +1491,8 @@ def download_episodes(
             indices=indices,
             skip_existing=skip_existing,
             quiet=quiet,
+            show_title=show_title,
+            direct_episodes=direct_episodes,
         )
 
     feed = parse_feed(rss_url)

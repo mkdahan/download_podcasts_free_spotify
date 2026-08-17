@@ -49,6 +49,10 @@ class DownloadRequest(BaseModel):
     out_dir: str = Field(min_length=1)
     indices: list[int] | None = None
     skip_existing: bool = True
+    show_title: str | None = None
+    episode_title: str | None = None
+    audio_url: str | None = None
+    members_only: bool = False
 
 
 class AddLibraryRequest(BaseModel):
@@ -113,12 +117,25 @@ def download(body: DownloadRequest) -> dict:
         raise HTTPException(status_code=400, detail=f"Cannot use folder: {e}") from e
 
     try:
+        direct = None
+        if body.audio_url and body.indices and len(body.indices) == 1:
+            direct = [
+                {
+                    "index": body.indices[0],
+                    "title": body.episode_title or "video",
+                    "audio_url": body.audio_url.strip(),
+                    "members_only": body.members_only,
+                    "has_audio": not body.members_only,
+                }
+            ]
         return core.download_episodes(
             body.rss.strip(),
             out,
             indices=body.indices,
             skip_existing=body.skip_existing,
             quiet=True,
+            show_title=body.show_title,
+            direct_episodes=direct,
         )
     except Exception as e:
         # Never leak raw codec crashes to the UI; give a usable message.

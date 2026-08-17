@@ -28,6 +28,12 @@
         "akiva zukerman",
         "akivazuk"
       ]
+    },
+    {
+      "name": "שרגא שמידלר",
+      "artist": "שרגא שמידלר",
+      "feed": "https://www.youtube.com/playlist?list=PL2URn1Y246LwljL4r2_GH8hUr_OSOg_IX",
+      "aliases": ["שרגא", "שמידלר", "schmidler", "shraga"]
     }
   ]
 }

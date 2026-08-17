@@ -35,6 +35,8 @@ if errorlevel 1 (
 
 echo Installing requirements...
 %PY% -m pip install -r requirements.txt
+echo Updating yt-dlp (YouTube changes often)...
+%PY% -m pip install -U yt-dlp
 if errorlevel 1 (
   echo Failed to install requirements.
   pause

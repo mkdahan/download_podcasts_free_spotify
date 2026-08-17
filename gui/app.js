@@ -106,7 +106,12 @@ els.form.addEventListener("submit", async (event) => {
 
   if (/youtube\.com|youtu\.be/i.test(query)) {
     setStatus(els.searchStatus, "Opening YouTube link…");
-    await openFeed({ name: query, artist: "YouTube", feed: query, source: "youtube" });
+    await openFeed({
+      name: query,
+      artist: "YouTube",
+      feed: query,
+      source: /[?&]list=/i.test(query) ? "youtube-playlist" : "youtube",
+    });
     return;
   }
 
@@ -121,7 +126,7 @@ els.form.addEventListener("submit", async (event) => {
   try {
     const data = await api("/api/search", {
       method: "POST",
-      body: JSON.stringify({ query, limit: 20 }),
+      body: JSON.stringify({ query, limit: 30 }),
     });
 
     const notes = (data.notes || []).join("\n");
@@ -223,11 +228,17 @@ function renderShow(feed) {
       <p class="ep-date"></p>
     `;
     const check = row.querySelector(".ep-check");
+    const members = Boolean(ep.members_only) || !ep.has_audio;
+    row.className = `episode${members ? " disabled" : ""}`;
     check.value = String(ep.index);
-    check.checked = ep.has_audio;
-    check.disabled = !ep.has_audio;
+    check.checked = ep.has_audio && !ep.members_only;
+    check.disabled = members;
     row.querySelector("h3").textContent = `${ep.index}. ${ep.title}`;
-    row.querySelector(".ep-audio").textContent = ep.has_audio ? "Audio ready" : "No audio enclosure";
+    row.querySelector(".ep-audio").textContent = ep.members_only
+      ? "Members-only (skipped)"
+      : ep.has_audio
+        ? "Audio ready"
+        : "No audio enclosure";
     row.querySelector(".ep-date").textContent = ep.published || "";
     els.episodes.appendChild(row);
   }
@@ -295,7 +306,7 @@ els.downloadBtn.addEventListener("click", async () => {
       els.downloadStatus,
       [
         `Progress: ${totals.downloaded + totals.exists + totals.error + totals.skipped}/${indices.length}`,
-        `New: ${totals.downloaded} · Already had: ${totals.exists} · Errors: ${totals.error}`,
+        `New: ${totals.downloaded} · Already had: ${totals.exists} · Skipped: ${totals.skipped} · Errors: ${totals.error}`,
         title ? `Now: #${currentIdx} ${title}` : `Starting…`,
         `Folder: ${dest}`,
         "",
@@ -315,6 +326,7 @@ els.downloadBtn.addEventListener("click", async () => {
       const idx = indices[i];
       renderProgress(idx, "(downloading…)");
       try {
+        const ep = (currentFeed.episodes || []).find((e) => e.index === idx);
         const data = await api("/api/download", {
           method: "POST",
           body: JSON.stringify({
@@ -322,6 +334,10 @@ els.downloadBtn.addEventListener("click", async () => {
             out_dir: outDir,
             indices: [idx],
             skip_existing: true,
+            show_title: currentFeed.title,
+            episode_title: ep?.title,
+            audio_url: ep?.audio_url,
+            members_only: Boolean(ep?.members_only),
           }),
         });
         if (data.dest) dest = data.dest;
@@ -351,6 +367,7 @@ els.downloadBtn.addEventListener("click", async () => {
         downloadCancel ? "Stopped." : "Done.",
         `New files: ${totals.downloaded}`,
         `Already existed: ${totals.exists}`,
+        `Skipped (members-only / blocked): ${totals.skipped}`,
         `Errors: ${totals.error}`,
         `Folder: ${dest}`,
         "",
